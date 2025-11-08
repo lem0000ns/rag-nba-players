@@ -5,23 +5,23 @@ from langchain.agents import Tool, AgentExecutor, create_react_agent
 from langchain.prompts.prompt import PromptTemplate
 from langchain.chains.conversation.memory import ConversationBufferWindowMemory
 import os
-from langchain_openai import ChatOpenAI
 import re
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
 rag_chain = get_qa_chain()
 
 def rag_tool_func(q):
-    print(f"\nRAG tool called with question: {q}")
+    # print(f"\nRAG tool called with question: {q}")
     result = rag_chain.invoke({"input": q})
-    print("-" * 100)
-    print(f"\nRetrieved {len(result['context'])} documents:")
-    for i, doc in enumerate(result['context'], 1):
-        print(f"\n--- Document {i} ---")
-        print(f"Content: {doc.page_content}")
-        print(f"Metadata: {doc.metadata}")
-    print("-" * 100)
+    # print("-" * 100)
+    # print(f"\nRetrieved {len(result['context'])} documents:")
+    # for i, doc in enumerate(result['context'], 1):
+    #     print(f"\n--- Document {i} ---")
+    #     print(f"Content: {doc.page_content}")
+    #     print(f"Metadata: {doc.metadata}")
+    # print("-" * 100)
     answer = result.get("answer", "No answer found")
     return answer
 
@@ -64,14 +64,14 @@ Thought: {agent_scratchpad}
 
 def get_agent_chain():
     prompt = PromptTemplate.from_template(REACT_PROMPT)
-    agent = create_react_agent(llm=ChatOpenAI(model_name='gpt-4-turbo'), tools=tools, prompt=prompt)
+    agent = create_react_agent(llm=ChatOpenAI(model="gpt-4-turbo"), tools=tools, prompt=prompt)
     memory = ConversationBufferWindowMemory(memory_key='chat_history', k=5, return_messages=True, output_key="output")
     agent_chain = AgentExecutor(agent=agent,
                             tools=tools,
                             memory=memory,
                             max_iterations=5,
                             handle_parsing_errors=True,
-                            verbose=True,
+                            verbose=False,
                             )
     return agent_chain
 
