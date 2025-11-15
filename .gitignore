@@ -1,1 +1,6 @@
 .env
+hp_data/
+__pycache__/
+*.pyc
+chroma/
+scraped_urls.json

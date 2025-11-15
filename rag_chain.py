@@ -17,7 +17,7 @@ load_dotenv()
 
 openai.api_key = os.environ['OPENAI_API_KEY']
 
-CHROMA_PATH = "./chroma"
+CHROMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma")
 
 RAG_PROMPT_INF = (
     "You are an assistant for question-answering tasks. "
@@ -102,14 +102,14 @@ def get_retriever(mode="inf", use_raw_vllm=False):
     
     return ensemble_retriever, question_answer_chain
 
-def get_qa_chain(mode="inf"):
+def get_rag_chain(mode="inf"):
     ensemble_retriever, question_answer_chain = get_retriever(mode)
     # create retrieval chain
     rag_chain = create_retrieval_chain(ensemble_retriever, question_answer_chain)
     return rag_chain
 
 def main():
-    rag_chain = get_qa_chain()
+    rag_chain = get_rag_chain()
     
     chat_history = [
         HumanMessage(content="Who is Lebron James?"),

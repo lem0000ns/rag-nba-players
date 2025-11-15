@@ -8,16 +8,17 @@ import openai
 import os
 import shutil
 from scrape_hp import Scraper
-import threading
 import time
+from queue import Queue
+from threading import Thread
 
 load_dotenv()
 
 openai.api_key = os.environ['OPENAI_API_KEY']
 
-CHROMA_PATH = "./chroma"
-
-DATA_PATH = "hp_data"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CHROMA_PATH = os.path.join(SCRIPT_DIR, "chroma")
+DATA_PATH = os.path.join(SCRIPT_DIR, "hp_data")
 
 def chunk_documents():
     loader = DirectoryLoader(DATA_PATH, glob="*.txt")
@@ -61,21 +62,42 @@ def main():
     vectorstore = Chroma(collection_name="harry_potter_collection", persist_directory=CHROMA_PATH, embedding_function=OpenAIEmbeddings())
 
     before_time = time.time()
+    
     scraper = Scraper(batch_size=20, store_callback=lambda: store_chroma_callback(vectorstore))
+
+    def retrieve(q):
+        while True:
+            method_name = q.get()
+            if method_name is None:
+                break
+            method = getattr(scraper, method_name)
+            method()
+            q.task_done()
     
-    scraper.retrieve_things()
-    scraper.retrieve_creatures() 
-    scraper.retrieve_novels()
-    scraper.retrieve_events()
-    scraper.retrieve_magic()
-    scraper.retrieve_places()
-    scraper.retrieve_characters()
+    q = Queue(maxsize=0)
+    num_workers = 8
+    for i in range(num_workers):
+        worker = Thread(target=retrieve, args=(q,))
+        worker.daemon = True
+        worker.start()
     
+    for method_name in ['retrieve_places', 'retrieve_characters', 'retrieve_creatures', 'retrieve_novels', 'retrieve_magic', 'retrieve_things_one', 'retrieve_things_two', 'retrieve_events']:
+        q.put(method_name)
+    
+    q.join()
+
     after_time = time.time()
     print(f"Time taken: {after_time - before_time} seconds")
     print(f"Scraped {scraper.documents_scraped} documents")
 
     clear_data_folder()
 
+def print_num_documents_in_chroma():
+    """Prints the number of documents stored in the Chroma vectorstore."""
+    vectorstore = Chroma(collection_name="harry_potter_collection", persist_directory=CHROMA_PATH, embedding_function=OpenAIEmbeddings())
+    num_docs = vectorstore._collection.count()
+    print(f"Number of documents in Chroma: {num_docs}")
+
 if __name__ == "__main__":
     main()
+    print_num_documents_in_chroma()

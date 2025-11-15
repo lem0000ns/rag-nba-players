@@ -4,9 +4,9 @@ import time
 import json
 import os
 from functools import wraps
-import shutil
+from threading import Lock
+import random
 
-# TODO: EVENTS, SOURCES
 
 def clear_hp_data():
     """Clears hp_data folder contents."""
@@ -48,20 +48,29 @@ class Scraper:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        self.scraped_urls = set()  # Track scraped URLs in memory
+        self.scraped_urls = set() 
         self.scraped_urls_file = scraped_urls_file
-        self._load_scraped_urls()  # Load previously scraped URLs
+        
+        # Locks for thread-safe operations
+        self.scraped_urls_lock = Lock()
+        self.documents_scraped_lock = Lock()
+        self.request_lock = Lock()  
+        
+        self._load_scraped_urls() 
     
     def increment_documents_scraped(self):
         """Increments the number of documents scraped and calls the store callback if the batch size is reached."""
-        self.documents_scraped += 1
+        with self.documents_scraped_lock:
+            self.documents_scraped += 1
+            should_callback = self.documents_scraped % self.batch_size == 0
         
-        if self.documents_scraped % self.batch_size == 0:
+        if should_callback:
             self.store_callback()
 
     def get_documents_scraped(self):
         """Returns the number of documents scraped."""
-        return self.documents_scraped
+        with self.documents_scraped_lock:
+            return self.documents_scraped
     
     def _load_scraped_urls(self):
         """Load previously scraped URLs from file if it exists."""
@@ -80,28 +89,52 @@ class Scraper:
     def _save_scraped_urls(self):
         """Save scraped URLs to file for persistence."""
         try:
-            with open(self.scraped_urls_file, 'w') as f:
-                json.dump(list(self.scraped_urls), f, indent=2)
+            with self.scraped_urls_lock:
+                with open(self.scraped_urls_file, 'w') as f:
+                    json.dump(list(self.scraped_urls), f, indent=2)
         except Exception as e:
             print(f"Could not save scraped URLs: {e}")
     
     def is_url_scraped(self, url):
         """Check if a URL has already been scraped."""
-        return url in self.scraped_urls
+        with self.scraped_urls_lock:
+            return url in self.scraped_urls
     
     def mark_url_as_scraped(self, url):
         """Mark a URL as scraped and periodically save to disk."""
-        self.scraped_urls.add(url)
-        # Save to disk periodically (every 10 URLs)
-        if len(self.scraped_urls) % 10 == 0:
+        with self.scraped_urls_lock:
+            self.scraped_urls.add(url)
+            should_save = len(self.scraped_urls) % 10 == 0
+        
+        # Save outside the lock to avoid deadlock
+        if should_save:
             self._save_scraped_urls()
     
     def reset_scraped_urls(self):
         """Reset the scraped URLs tracker (use with caution!)."""
-        self.scraped_urls = set()
+        with self.scraped_urls_lock:
+            self.scraped_urls = set()
         if os.path.exists(self.scraped_urls_file):
             os.remove(self.scraped_urls_file)
         print("Scraped URLs tracker has been reset")
+    
+    def rate_limited_request(self, url, min_delay=0.3, max_delay=0.5):
+        """Make a rate-limited HTTP request to avoid overwhelming the server.
+        
+        Args:
+            url: The URL to request
+            min_delay: Minimum delay between requests (seconds)
+            max_delay: Maximum delay between requests (seconds)
+            
+        Returns:
+            Response object from requests.get()
+        """
+        with self.request_lock:
+            # random delay to avoid thundering herd
+            delay = random.uniform(min_delay, max_delay)
+            time.sleep(delay)
+            response = requests.get(url, headers=self.headers)
+            return response
 
     # scrape alphabetical catalog of magical items & devices, magical and mundane plants
     def scrape_catalog_by_letter(self, base_url):
@@ -109,7 +142,7 @@ class Scraper:
         for letter in self.alphabet:
             while True:
                 try:
-                    page = requests.get(base_url.format(letter=letter), headers=self.headers)
+                    page = self.rate_limited_request(base_url.format(letter=letter))
                     soup = BeautifulSoup(page.text, "html.parser")
                     middle_column = soup.find_all("div", class_="col-md-12")[1]
                     items_list = middle_column.find_all("article")
@@ -127,6 +160,7 @@ class Scraper:
                     print(f"Connection error retrieving page: {e}. Retrying in 10 seconds...")
                     time.sleep(10)
                 except Exception as e:
+                    print(f"Error1 retrieving letter {letter}: {e}")
                     break
 
     def scrape_raw_text(self, url, is_article=False, recursive=False, is_timeline=False):
@@ -139,7 +173,7 @@ class Scraper:
         tries = 0
         while True:
             try:
-                character_page = requests.get(url, headers=self.headers)
+                character_page = self.rate_limited_request(url)
                 soup = BeautifulSoup(character_page.text, "html.parser")
                 text_parts = []
                 if is_article:
@@ -232,9 +266,9 @@ class Scraper:
             return
         categories = ul_sibling.find_all("a")
         for cat in categories:
-            print("=" * 100)
+            print("=" * 50)
             print(f"Retrieving category: {cat.get_text()}")
-            print("=" * 100)
+            print("=" * 50)
             cat_url = cat.get("href")
             if not cat_url:
                 print(f"No href found for category: {cat.get_text()}")
@@ -245,7 +279,7 @@ class Scraper:
                     try:
                         print("Retrieving letter: ", letter)
                         cur_cat_url = f"{cat_url}?letter={letter}"
-                        cur_cat_page = requests.get(cur_cat_url, headers=self.headers)
+                        cur_cat_page = self.rate_limited_request(cur_cat_url)
                         letter_soup = BeautifulSoup(cur_cat_page.text, "html.parser")
                         middle_column = letter_soup.find_all("div", class_="col-md-12")[1]
                         cur_cat_items = middle_column.find_all("article")
@@ -263,6 +297,7 @@ class Scraper:
                         print(f"Connection error retrieving letter {letter}: {e}. Retrying in 10 seconds...")
                         time.sleep(10)
                     except Exception as e:
+                        print(f"Error2 retrieving letter {letter}: {e}")
                         break
     
     def scrape_quotes(self, url):
@@ -274,7 +309,7 @@ class Scraper:
         
         while True:
             try:
-                quote_page = requests.get(url, headers=self.headers)
+                quote_page = self.rate_limited_request(url)
                 soup = BeautifulSoup(quote_page.text, "html.parser")
                 quotes_list = soup.find_all("li")
                 text = ""
@@ -298,7 +333,7 @@ class Scraper:
         url = "https://www.hp-lexicon.org/characters/"
         while True:
             try:
-                characters_page = requests.get(url, headers=self.headers)
+                characters_page = self.rate_limited_request(url)
                 soup = BeautifulSoup(characters_page.text, "html.parser")
                 break
             except (requests.exceptions.ConnectionError, ConnectionResetError) as e:
@@ -312,9 +347,9 @@ class Scraper:
             if not heading:
                 print(f"No heading found for group: {group_name}")
                 continue
-            print("=" * 100)
+            print("=" * 50)
             print("Retrieving group: ", group_name)
-            print("=" * 100)
+            print("=" * 50)
             group = heading.find_next_sibling("ul")
             if not group:
                 print(f"No ul sibling found for group: {group_name}")
@@ -331,7 +366,7 @@ class Scraper:
         for letter in self.alphabet:
             while True:
                 try:
-                    page = requests.get(alphabetical_catalog_url.format(letter=letter), headers=self.headers)
+                    page = self.rate_limited_request(alphabetical_catalog_url.format(letter=letter))
                     soup = BeautifulSoup(page.text, "html.parser")
                     middle_column = soup.find_all("div", class_="col-md-12")[1]
                     items_list = middle_column.find_all("article")
@@ -358,7 +393,7 @@ class Scraper:
         url = "https://www.hp-lexicon.org/places/"
         while True:
             try:
-                places_page = requests.get(url, headers=self.headers)
+                places_page = self.rate_limited_request(url)
                 soup = BeautifulSoup(places_page.text, "html.parser")
                 break
             except (requests.exceptions.ConnectionError, ConnectionResetError) as e:
@@ -375,9 +410,9 @@ class Scraper:
             if not heading:
                 print(f"No heading found for group: {group_name}")
                 continue
-            print("=" * 100)
+            print("=" * 50)
             print("Retrieving group: ", group_name)
-            print("=" * 100)
+            print("=" * 50)
             group = heading.find_next_sibling("ul")
             if not group:
                 print(f"No ul sibling found for group: {group_name}")
@@ -403,7 +438,7 @@ class Scraper:
         url = "https://www.hp-lexicon.org/magic/"
         while True:
             try:
-                magic_page = requests.get(url, headers=self.headers)
+                magic_page = self.rate_limited_request(url)
                 soup = BeautifulSoup(magic_page.text, "html.parser")
                 break
             except (requests.exceptions.ConnectionError, ConnectionResetError) as e:
@@ -425,9 +460,9 @@ class Scraper:
             if not heading:
                 print(f"No heading found for group: {group_name}")
                 continue
-            print("=" * 100)
+            print("=" * 50)
             print("Retrieving group: ", group_name)
-            print("=" * 100)
+            print("=" * 50)
             group = heading.find_next_sibling("ul")
             if not group:
                 print(f"No ul sibling found for group: {group_name}")
@@ -451,12 +486,12 @@ class Scraper:
         self.scrape_catalog_by_letter(mam_plants_url)
 
     @timing_decorator
-    def retrieve_things(self):
+    def retrieve_things_one(self):
         """Retrieves all things from the things page."""
         url = "https://www.hp-lexicon.org/things/"
         while True:
             try:
-                things_page = requests.get(url, headers=self.headers)
+                things_page = self.rate_limited_request(url)
                 soup = BeautifulSoup(things_page.text, "html.parser")
                 break
             except (requests.exceptions.ConnectionError, ConnectionResetError) as e:
@@ -478,7 +513,7 @@ class Scraper:
         
         # scrape departments
         mom_url = "https://www.hp-lexicon.org/thing/ministry-of-magic/"
-        mom_page = requests.get(mom_url, headers=self.headers)
+        mom_page = self.rate_limited_request(mom_url)
         mom_soup = BeautifulSoup(mom_page.text, "html.parser")
         departments_list = mom_soup.select_one("html > body > article > section > div > div > section > div > div:nth-of-type(2) > div:nth-of-type(1) > ul")
         if departments_list:
@@ -489,7 +524,7 @@ class Scraper:
 
         # scrape places and equipment, organizations
         quidditch_url = "https://www.hp-lexicon.org/thing/quidditch/"
-        quidditch_page = requests.get(quidditch_url, headers=self.headers)
+        quidditch_page = self.rate_limited_request(quidditch_url)
         quidditch_soup = BeautifulSoup(quidditch_page.text, "html.parser")
         places_and_equipment = quidditch_soup.find("h2", string="Quiddith places and equipment")
         if places_and_equipment:
@@ -511,7 +546,7 @@ class Scraper:
         # scrape daily prophet personnel
         dp_employees_url = "https://www.hp-lexicon.org/thing/daily-prophet/writers-employees-daily-prophet/"
         self.scrape_raw_text(dp_employees_url)
-        dp_employees_page = requests.get(dp_employees_url, headers=self.headers)
+        dp_employees_page = self.rate_limited_request(dp_employees_url)
         dp_employees_soup = BeautifulSoup(dp_employees_page.text, "html.parser")
         headline = dp_employees_soup.select_one("html > body > article > section > div > div > section > div > div:nth-of-type(1) > div:nth-of-type(1) > h2")
         if headline:
@@ -527,7 +562,7 @@ class Scraper:
         # scrape daily prophet headlines and articles
         headlines_url = "https://www.hp-lexicon.org/thing/daily-prophet/headlines-articles-daily-prophet/"
         self.scrape_raw_text(headlines_url)
-        headlines_page = requests.get(headlines_url, headers=self.headers)
+        headlines_page = self.rate_limited_request(headlines_url)
         headlines_soup = BeautifulSoup(headlines_page.text, "html.parser")
         headlines = headlines_soup.find_all("p")
         for p in headlines:
@@ -539,7 +574,7 @@ class Scraper:
 
         # scrape Pottermore Hogwarts Express articles
         express_url = "https://www.hp-lexicon.org/thing/hogwarts-express/"
-        express_page = requests.get(express_url, headers=self.headers)
+        express_page = self.rate_limited_request(express_url)
         express_soup = BeautifulSoup(express_page.text, "html.parser")
         articles = express_soup.select_one("html > body > article > section > div > div > section > div > div:nth-of-type(3) > div:nth-of-type(2) > ul")
         if articles:
@@ -547,6 +582,19 @@ class Scraper:
                 url = article.get("href")
                 if url:
                     self.scrape_raw_text(url, is_article=True)
+    
+    @timing_decorator
+    def retrieve_things_two(self):
+        """Scrapes the rest of the things from the things page."""
+        url = "https://www.hp-lexicon.org/things/"
+        while True:
+            try:
+                things_page = self.rate_limited_request(url)
+                soup = BeautifulSoup(things_page.text, "html.parser")
+                break
+            except (requests.exceptions.ConnectionError, ConnectionResetError) as e:
+                print(f"Connection error retrieving things page: {e}. Retrying in 10 seconds...")
+                time.sleep(10)
 
         # scrape rest of things
         css_selector = "html > body > article > section > div > div > section > div > div:nth-of-type(1) > div:nth-of-type(1) > p:nth-of-type({position})"
@@ -604,7 +652,7 @@ class Scraper:
         """Retrieves all creatures from the creatures page."""
         url = "https://www.hp-lexicon.org/creatures-bestiary/"
         self.scrape_raw_text(url)
-        creatures_page = requests.get(url, headers=self.headers)
+        creatures_page = self.rate_limited_request(url)
         soup = BeautifulSoup(creatures_page.text, "html.parser")
         sections = ["Well-Known Creatures", "Types of Creatures", "Characters who are Creatures", "Miscellaneous"]
         for section in sections:
@@ -639,7 +687,7 @@ class Scraper:
         """Retrieves all novels from the novels page."""
         url = "https://www.hp-lexicon.org/source/the-harry-potter-novels/"
         # self.scrape_raw_text(url)
-        novels_page = requests.get(url, headers=self.headers)
+        novels_page = self.rate_limited_request(url)
         soup = BeautifulSoup(novels_page.text, "html.parser")
         temp = soup.select_one("html > body > article > section > div > div > section > div > div:nth-of-type(2) > div:nth-of-type(1) > hr:nth-of-type(1)")
         if not temp:
@@ -655,7 +703,7 @@ class Scraper:
             url = book_link.get("href")
             if not url:
                 continue
-            book_page = requests.get(url, headers=self.headers)
+            book_page = self.rate_limited_request(url)
             book_soup = BeautifulSoup(book_page.text, "html.parser")
             self.scrape_raw_text(url)
             chapters = book_soup.find_all("a", string=lambda text: text and "Chapter" in text and "-" in text )
@@ -673,7 +721,7 @@ class Scraper:
         print("Scraping quidditch through the ages...")
         qa_url = "https://www.hp-lexicon.org/source/other-potter-books/qa/"
         self.scrape_raw_text(qa_url)
-        qa_page = requests.get(qa_url, headers=self.headers)
+        qa_page = self.rate_limited_request(qa_url)
         qa_soup = BeautifulSoup(qa_page.text, "html.parser")
         contents = qa_soup.find("h2", string="Contents")
         chapters = contents.find_next_siblings("p")[:10]
@@ -689,7 +737,8 @@ class Scraper:
         self.retrieve_characters()
         self.retrieve_places()
         self.retrieve_magic()
-        self.retrieve_things()
+        self.retrieve_things_one()
+        self.retrieve_things_two()
         self.retrieve_creatures()
         self.retrieve_novels()
         self.retrieve_events()
@@ -709,7 +758,7 @@ class Scraper:
                 return
             if "attachment" in url:
                 return
-            page = requests.get(url, headers=self.headers)
+            page = self.rate_limited_request(url)
             soup = BeautifulSoup(page.text, "html.parser")
             column = soup.select_one("html > body > article > section > div > div")
             timeline_text_parts = []
@@ -730,7 +779,7 @@ class Scraper:
             self.increment_documents_scraped()
             self.mark_url_as_scraped(url)
 
-        events_page = requests.get(events_url, headers=self.headers)
+        events_page = self.rate_limited_request(events_url)
         soup = BeautifulSoup(events_page.text, "html.parser")
         section = soup.select_one("html > body > article > section > div > div > section > div > div:nth-of-type(1) > div:nth-of-type(1)")
         if section:
@@ -771,7 +820,6 @@ if __name__ == "__main__":
         clear_hp_data()
 
         scraper = Scraper(batch_size=20, store_callback=lambda: print(f"Scraped {scraper.documents_scraped} documents"))
-        scraper.retrieve_things()
         scraper._save_scraped_urls()
         print(f"Finished scraping {scraper.documents_scraped} documents")
         
