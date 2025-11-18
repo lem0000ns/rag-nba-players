@@ -54,7 +54,8 @@ class Scraper:
         # Locks for thread-safe operations
         self.scraped_urls_lock = Lock()
         self.documents_scraped_lock = Lock()
-        self.request_lock = Lock()  
+        self.request_lock = Lock()
+        self.callback_lock = Lock()
         
         self._load_scraped_urls() 
     
@@ -65,7 +66,8 @@ class Scraper:
             should_callback = self.documents_scraped % self.batch_size == 0
         
         if should_callback:
-            self.store_callback()
+            with self.callback_lock:
+                self.store_callback()
 
     def get_documents_scraped(self):
         """Returns the number of documents scraped."""
@@ -118,21 +120,16 @@ class Scraper:
             os.remove(self.scraped_urls_file)
         print("Scraped URLs tracker has been reset")
     
-    def rate_limited_request(self, url, min_delay=0.3, max_delay=0.5):
-        """Make a rate-limited HTTP request to avoid overwhelming the server.
+    def rate_limited_request(self, url):
+        """Mutex-controlled HTTP request to avoid thundering herd.
         
         Args:
             url: The URL to request
-            min_delay: Minimum delay between requests (seconds)
-            max_delay: Maximum delay between requests (seconds)
             
         Returns:
             Response object from requests.get()
         """
         with self.request_lock:
-            # random delay to avoid thundering herd
-            delay = random.uniform(min_delay, max_delay)
-            time.sleep(delay)
             response = requests.get(url, headers=self.headers)
             return response
 

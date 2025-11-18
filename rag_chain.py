@@ -11,7 +11,7 @@ from langchain.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain.schema import Document
 from langchain_openai import ChatOpenAI
-from evaluate import get_llm
+from evaluate.eval import get_llm
 
 load_dotenv()
 

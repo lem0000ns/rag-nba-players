@@ -42,8 +42,11 @@ def clear_data_folder():
 
 def store_chroma_callback(vectorstore: Chroma):
     chunks = chunk_documents()
-    vectorstore.add_documents(chunks)
-    print(f"Stored {len(chunks)} chunks in {CHROMA_PATH}")
+    if chunks:
+        vectorstore.add_documents(chunks)
+        print(f"Stored {len(chunks)} chunks in {CHROMA_PATH}")
+    else:
+        print("Warning: No chunks generated from documents")
 
     clear_data_folder()
 
